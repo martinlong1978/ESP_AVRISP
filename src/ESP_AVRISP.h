@@ -23,10 +23,12 @@ Original version:
 // #define AVRISP_ACTIVE_HIGH_RESET
 
 // SPI clock frequency in Hz
-#define AVRISP_SPI_FREQ   300e3
+#define AVRISP_SPI_FREQ 300e3
+#define SPI_PINS 14, 12, 13, 32
 
 // programmer states
 typedef enum {
+    AVRISP_STATE_NONE = -1,   // no active TCP session
     AVRISP_STATE_IDLE = 0,    // no active TCP session
     AVRISP_STATE_PENDING,     // TCP connected, pending SPI activation
     AVRISP_STATE_ACTIVE       // programmer is active and owns the SPI bus
@@ -48,7 +50,6 @@ typedef struct {
     int eepromsize;
     int flashsize;
 } AVRISP_parameter_t;
-
 
 class ESP_AVRISP {
 public:
@@ -73,10 +74,9 @@ public:
     AVRISPState_t serve();
 
 protected:
-
     inline void _reject_incoming(void);     // reject any incoming tcp connections
 
-    int avrisp(void);           // handle incoming STK500 commands
+    void avrisp(void);           // handle incoming STK500 commands
 
     uint8_t getch(void);        // retrieve a character from the remote end
     uint8_t spi_transaction(uint8_t, uint8_t, uint8_t, uint8_t);

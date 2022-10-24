@@ -10,10 +10,11 @@ Original version:
         http://www.opensource.org/licenses/bsd-license.php
 */
 
+#include "ESP_AVRISP.h"
 
 #include <Arduino.h>
 #include <SPI.h>
-#include "ESP_AVRISP.h"
+
 #include "command.h"
 #ifdef ESP8266
 #include <ESP8266WiFi.h>
@@ -34,8 +35,9 @@ extern "C" {
 #include <WiFi.h>
 #endif
 
-// #define AVRISP_DEBUG(fmt, ...)     os_printf("[AVRP] " fmt "\r\n", ##__VA_ARGS__ )
-#define AVRISP_DEBUG(...)
+#define AVRISP_DEBUG2(fmt, ...) Serial.printf("[AVRP] " fmt "\r\n", __VA_ARGS__)
+#define AVRISP_DEBUG1(fmt) Serial.printf("[AVRP] " fmt "\r\n")
+//#define AVRISP_DEBUG(...)
 
 #define AVRISP_HWVER 2
 #define AVRISP_SWMAJ 1
@@ -44,7 +46,9 @@ extern "C" {
 
 #define EECHUNK (32)
 
-#define beget16(addr) (*addr * 256 + *(addr+1))
+SPIClass MySPI(HSPI);
+
+#define beget16(addr) (*addr * 256 + *(addr + 1))
 
 ESP_AVRISP::ESP_AVRISP(uint16_t port, uint8_t reset_pin, uint32_t spi_freq, bool reset_state, bool reset_activehigh):
     _reset_pin(reset_pin), _reset_state(reset_state), _spi_freq(spi_freq), _reset_activehigh(reset_activehigh),
@@ -61,12 +65,14 @@ void ESP_AVRISP::begin() {
 void ESP_AVRISP::setSpiFrequency(uint32_t freq) {
     _spi_freq = freq;
     if (_state == AVRISP_STATE_ACTIVE) {
-        SPI.setFrequency(freq);
+        MySPI.setFrequency(freq);
     }
 }
 
 void ESP_AVRISP::setReset(bool rst) {
     _reset_state = rst;
+    AVRISP_DEBUG2("Setting pin %d to %d (setReset)\n", _reset_pin,
+                  _resetLevel(false));
     digitalWrite(_reset_pin, _resetLevel(_reset_state));
 }
 
@@ -78,8 +84,8 @@ AVRISPState_t ESP_AVRISP::update() {
                 _client.setNoDelay(true);
                 ip4_addr_t lip;
                 lip.addr = _client.remoteIP();
-                AVRISP_DEBUG("client connect %d.%d.%d.%d:%d", IP2STR(&lip), _client.remotePort());
-                _client.setTimeout(100); // for getch()
+                AVRISP_DEBUG2("client connect %d.%d.%d.%d:%d", IP2STR(&lip), _client.remotePort());
+                _client.setTimeout(100);  // for getch()
                 _state = AVRISP_STATE_PENDING;
                 _reject_incoming();
             }
@@ -90,9 +96,9 @@ AVRISPState_t ESP_AVRISP::update() {
             // handle disconnect
             if (!_client.connected()) {
                 _client.stop();
-                AVRISP_DEBUG("client disconnect");
+                AVRISP_DEBUG1("client disconnect");
                 if (pmode) {
-                    SPI.end();
+                    MySPI.end();
                     pmode = 0;
                 }
                 setReset(_reset_state);
@@ -117,6 +123,7 @@ AVRISPState_t ESP_AVRISP::serve() {
         }
         case AVRISP_STATE_ACTIVE: {
             while (_client.available()) {
+                // AVRISP_DEBUG1("Client available");
                 avrisp();
             }
             return update();
@@ -132,12 +139,12 @@ inline void ESP_AVRISP::_reject_incoming(void) {
 uint8_t ESP_AVRISP::getch() {
     while (!_client.available()) yield();
     uint8_t b = (uint8_t)_client.read();
-    // AVRISP_DEBUG("< %02x", b);
+    // AVRISP_DEBUG2("< %02x", b);
     return b;
 }
 
 void ESP_AVRISP::fill(int n) {
-    // AVRISP_DEBUG("fill(%u)", n);
+    // AVRISP_DEBUG2("fill(%u)", n);
     for (int x = 0; x < n; x++) {
         buff[x] = getch();
     }
@@ -145,18 +152,20 @@ void ESP_AVRISP::fill(int n) {
 
 uint8_t ESP_AVRISP::spi_transaction(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
     uint8_t n;
-    SPI.transfer(a);
-    n = SPI.transfer(b);
-    n = SPI.transfer(c);
-    return SPI.transfer(d);
+    MySPI.transfer(a);
+    n = MySPI.transfer(b);
+    n = MySPI.transfer(c);
+    return MySPI.transfer(d);
 }
 
 void ESP_AVRISP::empty_reply() {
     if (Sync_CRC_EOP == getch()) {
+        // AVRISP_DEBUG1("Reponding Resp_STK_INSYNC\n");
         _client.print((char)Resp_STK_INSYNC);
         _client.print((char)Resp_STK_OK);
     } else {
         error++;
+        // AVRISP_DEBUG1("Reponding Resp_STK_NOSYNC\n");
         _client.print((char)Resp_STK_NOSYNC);
     }
 }
@@ -167,6 +176,7 @@ void ESP_AVRISP::breply(uint8_t b) {
         resp[0] = Resp_STK_INSYNC;
         resp[1] = b;
         resp[2] = Resp_STK_OK;
+        // AVRISP_DEBUG2("Sending INSYNC %d \n", b);
         _client.write((const uint8_t *)resp, (size_t)3);
     } else {
         error++;
@@ -219,16 +229,19 @@ void ESP_AVRISP::set_parameters() {
 }
 
 void ESP_AVRISP::start_pmode() {
+    MySPI.setFrequency(_spi_freq);
+
 #ifdef SPI_PINS
-    SPI.begin(SPI_PINS);
+    MySPI.begin(SPI_PINS);
 #else
-    SPI.begin();
+    MySPI.begin();
 #endif
-    SPI.setFrequency(_spi_freq);
-    SPI.setHwCs(false);
+
+    MySPI.setFrequency(_spi_freq);
+    MySPI.setHwCs(false);
 
     // try to sync the bus
-    SPI.transfer(0x00);
+    MySPI.transfer(0x00);
     digitalWrite(_reset_pin, _resetLevel(false));
     delayMicroseconds(50);
     digitalWrite(_reset_pin, _resetLevel(true));
@@ -239,7 +252,7 @@ void ESP_AVRISP::start_pmode() {
 }
 
 void ESP_AVRISP::end_pmode() {
-    SPI.end();
+    MySPI.end();
     setReset(_reset_state);
     pmode = 0;
 }
@@ -271,7 +284,7 @@ int ESP_AVRISP::addr_page(int addr) {
     if (param.pagesize == 64)  return addr & 0xFFFFFFE0;
     if (param.pagesize == 128) return addr & 0xFFFFFFC0;
     if (param.pagesize == 256) return addr & 0xFFFFFF80;
-    AVRISP_DEBUG("unknown page size: %d", param.pagesize);
+    AVRISP_DEBUG2("unknown page size: %d", param.pagesize);
     return addr;
 }
 
@@ -436,10 +449,10 @@ void ESP_AVRISP::read_signature() {
 
 // It seems ArduinoISP is based on the original STK500 (not v2)
 // but implements only a subset of the commands.
-int ESP_AVRISP::avrisp() {
+void ESP_AVRISP::avrisp() {
     uint8_t data, low, high;
     uint8_t ch = getch();
-    // AVRISP_DEBUG("CMD 0x%02x", ch);
+    // AVRISP_DEBUG2("CMD 0x%02x", ch);
     switch (ch) {
     case Cmnd_STK_GET_SYNC:
         error = 0;
@@ -477,7 +490,7 @@ int ESP_AVRISP::avrisp() {
     case Cmnd_STK_LOAD_ADDRESS:
         here = getch();
         here += 256 * getch();
-        // AVRISP_DEBUG("here=0x%04x", here);
+        AVRISP_DEBUG2("here=0x%04x", here);
         empty_reply();
         break;
 
@@ -513,7 +526,7 @@ int ESP_AVRISP::avrisp() {
         delay(5);
         // if (_client && _client.connected())
         _client.stop();
-        // AVRISP_DEBUG("left progmode");
+        AVRISP_DEBUG1("left progmode");
 
         break;
 
@@ -529,7 +542,7 @@ int ESP_AVRISP::avrisp() {
 
       // anything else we will return STK_UNKNOWN
     default:
-        AVRISP_DEBUG("??!?");
+        AVRISP_DEBUG1("??!?");
         error++;
         if (Sync_CRC_EOP == getch()) {
             _client.print((char)Resp_STK_UNKNOWN);
